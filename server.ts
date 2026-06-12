@@ -1250,7 +1250,7 @@ async function startServer() {
   });
 }
 
-// Only start server if this file is run directly (not imported)
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Start server when running directly (not when imported by Vercel)
+if (process.env.NODE_ENV !== "production" || !process.env.VERCEL) {
   startServer();
 }

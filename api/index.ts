@@ -1,8 +1,25 @@
 import { app, connectMongoAndBootstrap } from "../server";
+import type { Request, Response } from "express";
 
-// Ensure MongoDB is connected before handling requests
-connectMongoAndBootstrap().catch(console.error);
+// Initialize MongoDB connection
+let isConnected = false;
 
-// Export the Express app for Vercel serverless
-export default app;
+async function handler(req: Request, res: Response) {
+  // Connect to MongoDB if not already connected
+  if (!isConnected) {
+    try {
+      await connectMongoAndBootstrap();
+      isConnected = true;
+    } catch (error) {
+      console.error("MongoDB connection failed:", error);
+      return res.status(500).json({ error: "Database connection failed" });
+    }
+  }
+
+  // Let Express handle the request
+  return app(req, res);
+}
+
+// Export for Vercel serverless
+export default handler;
 
