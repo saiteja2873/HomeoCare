@@ -108,6 +108,12 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
 
         socket.on("offer", async ({ offer, from }: { offer: RTCSessionDescriptionInit; from: string }) => {
           console.log("[WebRTC] Received offer from:", from);
+          
+          // Create peer connection if it doesn't exist
+          if (!peerConnectionRef.current) {
+            createPeerConnection(from, false, stream);
+          }
+          
           const pc = peerConnectionRef.current;
           if (pc) {
             await pc.setRemoteDescription(new RTCSessionDescription(offer));
@@ -128,8 +134,15 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
         socket.on("ice-candidate", async ({ candidate, from }: { candidate: RTCIceCandidateInit; from: string }) => {
           console.log("[WebRTC] Received ICE candidate from:", from);
           const pc = peerConnectionRef.current;
-          if (pc) {
-            await pc.addIceCandidate(new RTCIceCandidate(candidate));
+          if (pc && pc.remoteDescription) {
+            try {
+              await pc.addIceCandidate(new RTCIceCandidate(candidate));
+              console.log("[WebRTC] ICE candidate added successfully");
+            } catch (err) {
+              console.error("[WebRTC] Error adding ICE candidate:", err);
+            }
+          } else {
+            console.warn("[WebRTC] Cannot add ICE candidate - no peer connection or remote description");
           }
         });
 
@@ -151,17 +164,26 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
     }
 
     function createPeerConnection(remoteUserId: string, isInitiator: boolean, stream: MediaStream) {
+      // Don't create duplicate peer connections
+      if (peerConnectionRef.current) {
+        console.log("[WebRTC] Peer connection already exists, reusing");
+        return;
+      }
+
+      console.log(`[WebRTC] Creating peer connection (initiator: ${isInitiator})`);
       const pc = new RTCPeerConnection(iceServers);
       peerConnectionRef.current = pc;
 
       // Add local tracks to peer connection
       stream.getTracks().forEach(track => {
+        console.log(`[WebRTC] Adding local ${track.kind} track`);
         pc.addTrack(track, stream);
       });
 
       // Handle incoming remote stream
       pc.ontrack = (event) => {
-        console.log("[WebRTC] Received remote track");
+        console.log("[WebRTC] Received remote track:", event.track.kind);
+        console.log("[WebRTC] Remote stream has", event.streams[0].getTracks().length, "tracks");
         setRemoteStream(event.streams[0]);
         setConnectionStatus("Connected");
         setChatMessages(prev => [
@@ -181,24 +203,46 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
         }
       };
 
+      // ICE connection state change
+      pc.oniceconnectionstatechange = () => {
+        console.log("[WebRTC] ICE connection state:", pc.iceConnectionState);
+        if (pc.iceConnectionState === "failed") {
+          setConnectionStatus("Connection failed - retrying...");
+          pc.restartIce();
+        }
+      };
+
       // Connection state change
       pc.onconnectionstatechange = () => {
         console.log("[WebRTC] Connection state:", pc.connectionState);
         setConnectionStatus(`Connection: ${pc.connectionState}`);
+        
+        if (pc.connectionState === "connected") {
+          setConnectionStatus("Connected");
+        } else if (pc.connectionState === "disconnected") {
+          setConnectionStatus("Disconnected");
+        } else if (pc.connectionState === "failed") {
+          setConnectionStatus("Connection failed");
+        }
       };
 
       // If initiator, create and send offer
       if (isInitiator) {
         pc.createOffer()
-          .then(offer => pc.setLocalDescription(offer))
+          .then(offer => {
+            console.log("[WebRTC] Created offer");
+            return pc.setLocalDescription(offer);
+          })
           .then(() => {
+            console.log("[WebRTC] Set local description, sending offer");
             if (socketRef.current) {
               socketRef.current.emit("offer", {
                 offer: pc.localDescription,
                 to: remoteUserId
               });
             }
-          });
+          })
+          .catch(err => console.error("[WebRTC] Error creating offer:", err));
       }
     }
 
