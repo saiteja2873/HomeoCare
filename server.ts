@@ -760,6 +760,34 @@ app.post("/api/admin/doctors/:id/reject", async (req, res) => {
   res.json({ success: true, message: "Doctor application rejected and removed", doctor: removedDoctor });
 });
 
+app.post("/api/admin/doctors/:id/revoke", async (req, res) => {
+  const db = await loadDB();
+  const doctorId = req.params.id;
+  
+  // Find the doctor
+  const userIndex = db.users.findIndex((u: any) => u.id === doctorId && u.role === "doctor");
+  if (userIndex === -1) {
+    return res.status(404).json({ error: "Doctor not found" });
+  }
+
+  // Set isApproved to false (move back to pending)
+  db.users[userIndex].isApproved = false;
+  
+  // Add notification to doctor
+  db.notifications.push({
+    id: `not_revoke_${Date.now()}`,
+    userId: doctorId,
+    title: "License Revoked",
+    message: "Your HomeoCare Doctor license has been revoked by an administrator. Your account is now pending re-approval.",
+    type: "warning",
+    isRead: false,
+    createdAt: new Date().toISOString()
+  });
+  
+  await saveDB(db);
+  res.json({ success: true, message: "Doctor license revoked - moved to pending status", doctor: db.users[userIndex] });
+});
+
 // --- Get Doctor availability ---
 app.get("/api/doctors/:id/availability", async (req, res) => {
   const db = await loadDB();

@@ -36,6 +36,7 @@ interface AppContextType {
   markNotificationsRead: () => Promise<void>;
   approveDoctor: (doctorId: string) => Promise<boolean>;
   rejectDoctor: (doctorId: string) => Promise<boolean>;
+  revokeDoctor: (doctorId: string) => Promise<boolean>;
   refreshAll: () => Promise<void>;
 }
 
@@ -389,6 +390,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  const revokeDoctor = async (doctorId: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`/api/admin/doctors/${doctorId}/revoke`, { method: "POST" });
+      if (res.ok) {
+        await refreshAll();
+        return true;
+      }
+      return false;
+    } catch (e) {
+      return false;
+    }
+  };
+
   return (
     <AppContext.Provider value={{
       currentUser,
@@ -415,6 +429,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       markNotificationsRead,
       approveDoctor,
       rejectDoctor,
+      revokeDoctor,
       refreshAll
     }}>
       {children}

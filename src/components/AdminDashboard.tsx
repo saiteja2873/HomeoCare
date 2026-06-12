@@ -24,7 +24,8 @@ export const AdminDashboard: React.FC = () => {
     allAdminDoctors,
     appointments, 
     approveDoctor, 
-    rejectDoctor, 
+    rejectDoctor,
+    revokeDoctor, 
     setError 
   } = useApp();
 
@@ -51,6 +52,13 @@ export const AdminDashboard: React.FC = () => {
     const ok = await rejectDoctor(docId);
     if (!ok) {
       setError("Failed to delete/reject the selected registration record.");
+    }
+  };
+
+  const handleRevoke = async (docId: string) => {
+    const ok = await revokeDoctor(docId);
+    if (!ok) {
+      setError("Failed to revoke doctor license.");
     }
   };
 
@@ -285,8 +293,8 @@ export const AdminDashboard: React.FC = () => {
                           
                           <div className="flex gap-2">
                             <button
-                              onClick={() => handleReject(doc.id)}
-                              className="border border-slate-205 hover:bg-rose-50 text-rose-600 hover:text-rose-700 font-bold px-3 py-1.5 rounded-lg text-[11px] transition"
+                              onClick={() => handleRevoke(doc.id)}
+                              className="border border-slate-205 hover:bg-rose-50 text-rose-600 hover:text-rose-700 font-bold px-3 py-1.5 rounded-lg text-[11px] transition cursor-pointer"
                             >
                               Revoke License
                             </button>
