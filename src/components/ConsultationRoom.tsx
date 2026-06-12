@@ -580,10 +580,10 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
   };
 
   return (
-    <div id="consultation_room_root" className="fixed inset-0 bg-slate-950 z-50 flex flex-col md:flex-row text-white">
+    <div id="consultation_room_root" className="fixed inset-0 bg-slate-950 z-50 flex flex-col md:flex-row text-white overflow-hidden">
       {/* Dynamic Video Showcase Grid */}
-      <div className="flex-1 flex flex-col p-4 md:p-6 relative">
-        <div id="consultation_room_header" className="flex justify-between items-center bg-slate-900/60 backdrop-blur-md rounded-2xl p-4 mb-4 border border-slate-800">
+      <div className="flex-1 flex flex-col p-4 md:p-6 relative overflow-auto">
+        <div id="consultation_room_header" className="flex justify-between items-center bg-slate-900/60 backdrop-blur-md rounded-2xl p-4 mb-4 border border-slate-800 flex-shrink-0">
           <div className="flex items-center gap-2">
             <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping"></div>
             <h2 className="text-sm font-semibold tracking-wide font-display">
@@ -596,7 +596,7 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
         </div>
 
         {/* Double Videos Section */}
-        <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4" style={{ height: 'calc(100vh - 250px)' }}>
           
           {/* 1. Remote Participant View */}
           <div className="bg-slate-900 rounded-3xl border border-slate-800 overflow-hidden relative flex items-center justify-center min-h-[300px]">
@@ -719,7 +719,7 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
         </div>
 
         {/* Media Control Toolbar */}
-        <div id="media_call_controls" className="bg-slate-900/80 border border-slate-800/80 p-4 mt-4 rounded-2xl flex items-center justify-center gap-3 md:gap-5">
+        <div id="media_call_controls" className="bg-slate-900/80 border border-slate-800/80 p-4 rounded-2xl flex flex-wrap items-center justify-center gap-3 md:gap-5 flex-shrink-0">
           <button
             onClick={() => setVideoActive(!videoActive)}
             className={`p-3.5 rounded-xl transition cursor-pointer ${videoActive ? "bg-slate-800 text-slate-200 hover:bg-slate-755" : "bg-rose-600 hover:bg-rose-500 text-white"}`}
