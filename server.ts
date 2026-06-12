@@ -1213,6 +1213,9 @@ app.get("/api/email-simulation-log", (req, res) => {
   res.json(emailLogs);
 });
 
+// Export app for Vercel
+export { app, connectMongoAndBootstrap };
+
 async function startServer() {
   // Connect to MongoDB first
   await connectMongoAndBootstrap();
@@ -1247,4 +1250,7 @@ async function startServer() {
   });
 }
 
-startServer();
+// Only start server if this file is run directly (not imported)
+if (import.meta.url === `file://${process.argv[1]}`) {
+  startServer();
+}
