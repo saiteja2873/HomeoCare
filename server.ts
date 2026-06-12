@@ -833,10 +833,48 @@ app.get("/api/appointments", async (req, res) => {
     appointmentsList = db.appointments.filter((a: any) => a.doctorId === userId);
   }
 
+  // Populate doctor name if not present
+  appointmentsList = appointmentsList.map((apt: any) => {
+    if (!apt.doctorName && apt.doctorId) {
+      const doctor = db.users.find((u: any) => u.id === apt.doctorId);
+      if (doctor) {
+        apt.doctorName = doctor.name;
+      }
+    }
+    return apt;
+  });
+
   // Sort by created or date
   appointmentsList.sort((a: any, b: any) => b.createdAt.localeCompare(a.createdAt));
 
   res.json(appointmentsList);
+});
+
+// Migration endpoint: Add doctorName to all existing appointments
+app.post("/api/admin/migrate-appointments", async (req, res) => {
+  try {
+    const db = await loadDB();
+    
+    // Update all appointments
+    let updated = 0;
+    for (const apt of db.appointments) {
+      if (!apt.doctorName && apt.doctorId) {
+        const doctor = db.users.find((u: any) => u.id === apt.doctorId);
+        if (doctor) {
+          apt.doctorName = doctor.name;
+          updated++;
+        }
+      }
+    }
+    
+    // Save back to MongoDB
+    await saveDB(db);
+    
+    res.json({ success: true, message: `Updated ${updated} appointments with doctor names` });
+  } catch (err) {
+    console.error("Migration error:", err);
+    res.status(500).json({ error: "Migration failed" });
+  }
 });
 
 app.post("/api/appointments", async (req, res) => {
@@ -867,6 +905,7 @@ app.post("/api/appointments", async (req, res) => {
     id: appointmentId,
     patientId: aptData.patientId,
     doctorId: aptData.doctorId,
+    doctorName: doctorUser.name,
     patientName: patientUser.name,
     patientEmail: patientUser.email,
     patientPhone: patientUser.phone,
@@ -1304,6 +1343,21 @@ function setupWebRTCSignaling(httpServer: any) {
     socket.on("ice-candidate", ({ candidate, to }) => {
       console.log(`[WebRTC] Sending ICE candidate from ${socket.id} to ${to}`);
       io.to(to).emit("ice-candidate", { candidate, from: socket.id });
+    });
+
+    socket.on("end-call", (roomId: string) => {
+      console.log(`[WebRTC] ${socket.id} ending call in room: ${roomId}`);
+      socket.to(roomId).emit("call-ended");
+    });
+
+    socket.on("video-toggle", ({ roomId, videoActive }: { roomId: string; videoActive: boolean }) => {
+      console.log(`[WebRTC] ${socket.id} toggled video in room ${roomId}: ${videoActive}`);
+      socket.to(roomId).emit("video-toggle", { videoActive });
+    });
+
+    socket.on("audio-toggle", ({ roomId, audioActive }: { roomId: string; audioActive: boolean }) => {
+      console.log(`[WebRTC] ${socket.id} toggled audio in room ${roomId}: ${audioActive}`);
+      socket.to(roomId).emit("audio-toggle", { audioActive });
     });
 
     socket.on("leave-room", (roomId: string) => {

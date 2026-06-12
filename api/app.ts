@@ -830,6 +830,17 @@ app.get("/api/appointments", async (req, res) => {
     appointmentsList = db.appointments.filter((a: any) => a.doctorId === userId);
   }
 
+  // Populate doctor name if not present
+  appointmentsList = appointmentsList.map((apt: any) => {
+    if (!apt.doctorName && apt.doctorId) {
+      const doctor = db.users.find((u: any) => u.id === apt.doctorId);
+      if (doctor) {
+        apt.doctorName = doctor.name;
+      }
+    }
+    return apt;
+  });
+
   // Sort by created or date
   appointmentsList.sort((a: any, b: any) => b.createdAt.localeCompare(a.createdAt));
 
@@ -864,6 +875,7 @@ app.post("/api/appointments", async (req, res) => {
     id: appointmentId,
     patientId: aptData.patientId,
     doctorId: aptData.doctorId,
+    doctorName: doctorUser.name,
     patientName: patientUser.name,
     patientEmail: patientUser.email,
     patientPhone: patientUser.phone,

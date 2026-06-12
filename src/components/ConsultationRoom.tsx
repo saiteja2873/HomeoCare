@@ -28,10 +28,19 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
   onClose,
   onComplete 
 }) => {
+  // Debug: Log appointment data
+  console.log('[ConsultationRoom] Appointment data:', { 
+    doctorId: appointment.doctorId, 
+    doctorName: appointment.doctorName,
+    patientName: appointment.patientName 
+  });
+
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [videoActive, setVideoActive] = useState(true);
   const [audioActive, setAudioActive] = useState(true);
+  const [remoteVideoActive, setRemoteVideoActive] = useState(true);
+  const [remoteAudioActive, setRemoteAudioActive] = useState(true);
   const [screenShareActive, setScreenShareActive] = useState(false);
   const [useSimulationFeed, setUseSimulationFeed] = useState(false); // Default to real video
   const [connectionStatus, setConnectionStatus] = useState<string>("Connecting...");
@@ -43,11 +52,37 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
   const [newMessage, setNewMessage] = useState("");
   const [completionNotes, setCompletionNotes] = useState("");
   const [showNotesForm, setShowNotesForm] = useState(false);
+  const [showPatientInfo, setShowPatientInfo] = useState(true);
+  const [sidebarTab, setSidebarTab] = useState<"chat" | "patient">("chat");
+  
+  // Editable patient fields
+  const [editablePatient, setEditablePatient] = useState({
+    age: appointment.age,
+    gender: appointment.gender,
+    height: appointment.height,
+    weight: appointment.weight,
+    maritalStatus: appointment.maritalStatus,
+    occupation: appointment.occupation,
+    address: appointment.address,
+    city: appointment.city,
+    state: appointment.state,
+    country: appointment.country,
+    mainComplaint: appointment.medicalInfo?.mainComplaint || "",
+    symptoms: appointment.medicalInfo?.symptoms || "",
+    durationOfProblem: appointment.medicalInfo?.durationOfProblem || "",
+    currentMedications: appointment.medicalInfo?.currentMedications || "",
+    previousTreatments: appointment.medicalInfo?.previousTreatments || "",
+    allergies: appointment.medicalInfo?.allergies || "",
+    chronicDiseases: appointment.medicalInfo?.chronicDiseases || "",
+    familyMedicalHistory: appointment.medicalInfo?.familyMedicalHistory || ""
+  });
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const socketRef = useRef<Socket | null>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
+  const isInitialMountRef = useRef(true);
+  const localStreamRef = useRef<MediaStream | null>(null); // Track current stream for cleanup
   const roomId = `consultation-${appointment.id}`;
 
   // STUN servers for NAT traversal
@@ -60,20 +95,26 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
 
   // Map local stream to video element
   useEffect(() => {
-    if (localVideoRef.current && localStream) {
+    if (localVideoRef.current && localStream && !useSimulationFeed) {
       localVideoRef.current.srcObject = localStream;
     }
-  }, [localStream]);
+  }, [localStream, useSimulationFeed]);
 
   // Map remote stream to video element
   useEffect(() => {
-    if (remoteVideoRef.current && remoteStream) {
+    if (remoteVideoRef.current && remoteStream && !useSimulationFeed) {
       remoteVideoRef.current.srcObject = remoteStream;
     }
-  }, [remoteStream]);
+  }, [remoteStream, useSimulationFeed]);
 
   // Initialize WebRTC and Socket.io
   useEffect(() => {
+    // Prevent duplicate initialization
+    if (socketRef.current) {
+      console.log("[WebRTC] Already initialized, skipping");
+      return;
+    }
+
     async function initWebRTC() {
       try {
         // Get local media stream
@@ -82,6 +123,7 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
           audio: true
         });
         setLocalStream(stream);
+        localStreamRef.current = stream; // Keep ref for cleanup in event handlers
         setConnectionStatus("Connected to media devices");
 
         // Connect to Socket.io signaling server
@@ -150,6 +192,51 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
           console.log("[WebRTC] User left:", userId);
           setConnectionStatus("Other participant left");
           setRemoteStream(null);
+        });
+
+        socket.on("call-ended", () => {
+          console.log("[WebRTC] Call ended by other participant");
+          
+          // Stop local media immediately when call ends
+          if (localVideoRef.current) {
+            localVideoRef.current.srcObject = null;
+          }
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = null;
+          }
+          
+          // Use ref to access current stream (closure issue fix)
+          if (localStreamRef.current) {
+            localStreamRef.current.getTracks().forEach(track => {
+              track.stop();
+              console.log(`[WebRTC] Call-ended: Stopped ${track.kind} track`);
+            });
+            localStreamRef.current = null;
+          }
+          
+          // Close peer connection
+          if (peerConnectionRef.current) {
+            peerConnectionRef.current.close();
+            peerConnectionRef.current = null;
+          }
+          
+          setChatMessages(prev => [
+            ...prev,
+            { sender: "system", text: "Call ended by other participant", time: "Now" }
+          ]);
+          setTimeout(() => {
+            onClose();
+          }, 2000);
+        });
+
+        socket.on("video-toggle", ({ videoActive: remoteVideo }: { videoActive: boolean }) => {
+          console.log("[WebRTC] Remote video toggled:", remoteVideo);
+          setRemoteVideoActive(remoteVideo);
+        });
+
+        socket.on("audio-toggle", ({ audioActive: remoteAudio }: { audioActive: boolean }) => {
+          console.log("[WebRTC] Remote audio toggled:", remoteAudio);
+          setRemoteAudioActive(remoteAudio);
         });
 
       } catch (err) {
@@ -250,15 +337,37 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
 
     // Cleanup on unmount
     return () => {
-      if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
+      console.log("[WebRTC] Cleaning up connections...");
+      
+      // Clear video element sources
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = null;
       }
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = null;
+      }
+      
+      // Stop all media tracks - use ref for consistency
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach(track => {
+          track.stop();
+          console.log(`[WebRTC] Cleanup: Stopped ${track.kind} track`);
+        });
+        localStreamRef.current = null;
+      }
+      
+      // Close peer connection
       if (peerConnectionRef.current) {
         peerConnectionRef.current.close();
+        peerConnectionRef.current = null;
       }
+      
+      // Disconnect socket
       if (socketRef.current) {
         socketRef.current.emit("leave-room", roomId);
+        socketRef.current.removeAllListeners();
         socketRef.current.disconnect();
+        socketRef.current = null;
       }
     };
   }, []);
@@ -269,8 +378,18 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
       localStream.getVideoTracks().forEach(track => {
         track.enabled = videoActive;
       });
+      
+      // Only notify remote participant after initial mount
+      if (!isInitialMountRef.current && socketRef.current) {
+        console.log('[WebRTC] Notifying remote: video =', videoActive, 'socket connected:', socketRef.current.connected, 'roomId:', roomId);
+        if (socketRef.current.connected) {
+          socketRef.current.emit("video-toggle", { roomId, videoActive });
+        } else {
+          console.error('[WebRTC] Cannot notify - socket not connected');
+        }
+      }
     }
-  }, [videoActive, localStream]);
+  }, [videoActive, localStream, roomId]);
 
   // Sync audio toggle
   useEffect(() => {
@@ -278,8 +397,118 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
       localStream.getAudioTracks().forEach(track => {
         track.enabled = audioActive;
       });
+      
+      // Only notify remote participant after initial mount
+      if (!isInitialMountRef.current && socketRef.current) {
+        console.log('[WebRTC] Notifying remote: audio =', audioActive);
+        socketRef.current.emit("audio-toggle", { roomId, audioActive });
+      }
     }
-  }, [audioActive, localStream]);
+  }, [audioActive, localStream, roomId]);
+
+  // Mark initial mount as complete after streams are ready
+  useEffect(() => {
+    if (localStream && socketRef.current) {
+      const timer = setTimeout(() => {
+        console.log('[WebRTC] Initial mount complete, enabling media toggle notifications');
+        isInitialMountRef.current = false;
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [localStream]);
+
+  const handleEndCall = () => {
+    console.log("[WebRTC] Ending call and cleaning up media...");
+    
+    // Clear video element sources first
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = null;
+    }
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = null;
+    }
+    
+    // Stop all local media tracks (camera and microphone) - use ref for consistency
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => {
+        track.stop();
+        console.log(`[WebRTC] Stopped ${track.kind} track`);
+      });
+      localStreamRef.current = null;
+      setLocalStream(null);
+    }
+    
+    // Clear remote stream
+    if (remoteStream) {
+      setRemoteStream(null);
+    }
+    
+    // Close peer connection
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.close();
+      peerConnectionRef.current = null;
+    }
+    
+    // Notify other participant and disconnect socket
+    if (socketRef.current) {
+      socketRef.current.emit("end-call", roomId);
+      socketRef.current.emit("leave-room", roomId);
+      socketRef.current.removeAllListeners();
+      socketRef.current.disconnect();
+      socketRef.current = null;
+    }
+    
+    // Close the consultation room
+    onClose();
+  };
+
+  const handleSavePatientInfo = async () => {
+    try {
+      const token = localStorage.getItem("token");
+      const response = await fetch(`/api/appointments/${appointment.id}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          age: editablePatient.age,
+          gender: editablePatient.gender,
+          height: editablePatient.height,
+          weight: editablePatient.weight,
+          maritalStatus: editablePatient.maritalStatus,
+          occupation: editablePatient.occupation,
+          address: editablePatient.address,
+          city: editablePatient.city,
+          state: editablePatient.state,
+          country: editablePatient.country,
+          medicalInfo: {
+            mainComplaint: editablePatient.mainComplaint,
+            symptoms: editablePatient.symptoms,
+            durationOfProblem: editablePatient.durationOfProblem,
+            currentMedications: editablePatient.currentMedications,
+            previousTreatments: editablePatient.previousTreatments,
+            allergies: editablePatient.allergies,
+            chronicDiseases: editablePatient.chronicDiseases,
+            familyMedicalHistory: editablePatient.familyMedicalHistory
+          }
+        })
+      });
+
+      if (response.ok) {
+        setChatMessages(prev => [
+          ...prev,
+          { sender: "system", text: "Patient information updated successfully", time: "Now" }
+        ]);
+      }
+    } catch (err) {
+      console.error("Failed to save patient info:", err);
+      setChatMessages(prev => [
+        ...prev,
+        { sender: "system", text: "Failed to update patient information", time: "Now" }
+      ]);
+    }
+  };
 
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
@@ -350,7 +579,7 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
           <div className="bg-slate-900 rounded-3xl border border-slate-800 overflow-hidden relative flex items-center justify-center min-h-[300px]">
             <div className="absolute top-4 left-4 bg-slate-900/80 px-3 py-1.5 rounded-xl border border-slate-800 text-xs font-semibold flex items-center gap-1.5 z-10">
               <User className="w-3.5 h-3.5 text-teal-400" />
-              <span>{userRole === "patient" ? "Dr. Aditya Sen (Physician)" : `${appointment.patientName} (Patient Case)`}</span>
+              <span>{userRole === "patient" ? `${appointment.doctorName || "Doctor"} (Physician)` : `${appointment.patientName} (Patient Case)`}</span>
             </div>
 
             {/* Connection status badge */}
@@ -360,15 +589,29 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
 
             {/* Remote video stream */}
             {remoteStream ? (
-              <video
-                ref={remoteVideoRef}
-                autoPlay
-                playsInline
-                className="w-full h-full object-cover"
-              />
+              <>
+                <video
+                  ref={remoteVideoRef}
+                  autoPlay
+                  playsInline
+                  className="w-full h-full object-cover"
+                />
+                {/* Remote video off overlay */}
+                {!remoteVideoActive && (
+                  <div className="absolute inset-0 bg-slate-950 flex items-center justify-center z-10">
+                    <div className="text-center p-6">
+                      <VideoOff className="w-10 h-10 text-slate-500 mx-auto mb-3" />
+                      <p className="text-xs font-semibold text-slate-400">Camera Off</p>
+                      <p className="text-[10px] text-slate-500 mt-1">
+                        {userRole === "patient" ? "Doctor" : "Patient"} has turned off their camera
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </>
             ) : useSimulationFeed ? (
               <BiometricSimulator 
-                name={userRole === "patient" ? "Dr. Aditya Sen (Physician)" : appointment.patientName} 
+                name={userRole === "patient" ? `${appointment.doctorName || "Doctor"} (Physician)` : appointment.patientName} 
                 type={userRole === "patient" ? "doctor" : "patient"} 
               />
             ) : (
@@ -403,17 +646,31 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
 
             {useSimulationFeed ? (
               <BiometricSimulator 
-                name={userRole === "patient" ? `${appointment.patientName} (Patient)` : "Dr. Aditya Sen (Physician)"} 
+                name={userRole === "patient" ? `${appointment.patientName} (Patient)` : `${appointment.doctorName || "Doctor"} (Physician)`} 
                 type={userRole === "patient" ? "patient" : "doctor"} 
               />
             ) : localStream ? (
-              <video
-                ref={localVideoRef}
-                autoPlay
-                playsInline
-                muted
-                className="w-full h-full object-cover transform scale-x-[-1]"
-              />
+              <>
+                <video
+                  ref={localVideoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className="w-full h-full object-cover transform scale-x-[-1]"
+                />
+                {/* Local video off overlay */}
+                {!videoActive && (
+                  <div className="absolute inset-0 bg-slate-950 flex items-center justify-center z-10">
+                    <div className="text-center p-6">
+                      <VideoOff className="w-10 h-10 text-slate-500 mx-auto mb-3" />
+                      <p className="text-xs font-semibold text-slate-400">Camera Off</p>
+                      <p className="text-[10px] text-slate-500 mt-1">
+                        Your camera has been turned off
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </>
             ) : (
               <div className="text-center space-y-3.5 p-6 md:p-8">
                 <div className="w-14 h-14 bg-slate-800 text-teal-400 border border-teal-500/20 rounded-full flex items-center justify-center mx-auto shadow-inner">
@@ -475,7 +732,7 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
           )}
 
           <button
-            onClick={onClose}
+            onClick={handleEndCall}
             className="bg-red-600 hover:bg-red-500 text-white px-5 py-3.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
           >
             <PhoneOff className="w-4 h-4" />
@@ -484,60 +741,227 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
         </div>
       </div>
 
-      {/* Slideout Text Chat Area */}
+      {/* Slideout Panel with Tabs: Chat & Patient Info */}
       <div className="w-full md:w-80 lg:w-96 bg-slate-900 border-t md:border-t-0 md:border-l border-slate-800/80 flex flex-col h-72 md:h-full">
-        <div className="p-4 bg-slate-850 border-b border-slate-800 flex items-center gap-2">
-          <MessageSquare className="w-4 h-4 text-teal-400" />
-          <h3 className="text-xs font-bold uppercase tracking-wider font-display">Live Secure Consultation Chat</h3>
-        </div>
-
-        {/* Message Feeds */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-3.5">
-          {chatMessages.map((msg, i) => {
-            if (msg.sender === "system") {
-              return (
-                <div key={i} className="text-center">
-                  <span className="inline-block text-[10px] text-teal-350 bg-teal-950/40 border border-teal-550/15 py-1 px-3 rounded-full">
-                    {msg.text}
-                  </span>
-                </div>
-              );
-            }
-
-            const isMe = msg.sender === userRole;
-            return (
-              <div 
-                key={i} 
-                className={`flex flex-col max-w-[80%] ${isMe ? "ml-auto items-end" : "mr-auto items-start"}`}
-              >
-                <span className="text-[10px] text-slate-450 uppercase mb-0.5 font-bold">
-                  {msg.sender === userRole ? "Me" : msg.sender}
-                </span>
-                <div className={`p-3 rounded-2xl text-xs ${isMe ? "bg-teal-650 text-white rounded-tr-none" : "bg-slate-800 text-slate-150 rounded-tl-none"}`}>
-                  <p className="leading-relaxed text-left">{msg.text}</p>
-                </div>
-                <span className="text-[8px] text-slate-500 mt-0.5">{msg.time}</span>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Input box */}
-        <form onSubmit={handleSendMessage} className="p-4 border-t border-slate-850 flex gap-2">
-          <input
-            type="text"
-            value={newMessage}
-            onChange={(e) => setNewMessage(e.target.value)}
-            placeholder="Type clinical details..."
-            className="flex-1 text-xs px-3 py-2 bg-slate-800 border border-slate-750 rounded-xl focus:border-teal-500 outline-none text-white transition"
-          />
+        {/* Tab Headers */}
+        <div className="flex border-b border-slate-800">
           <button
-            type="submit"
-            className="p-2.5 bg-teal-600 hover:bg-teal-500 text-slate-950 font-bold rounded-xl transition cursor-pointer"
+            onClick={() => setSidebarTab("chat")}
+            className={`flex-1 p-4 text-xs font-bold uppercase tracking-wider transition cursor-pointer ${
+              sidebarTab === "chat" 
+                ? "bg-slate-850 text-teal-400 border-b-2 border-teal-500" 
+                : "text-slate-400 hover:text-slate-200 hover:bg-slate-850/50"
+            }`}
           >
-            <Send className="w-4 h-4" />
+            <MessageSquare className="w-4 h-4 inline mr-1.5" />
+            Chat
           </button>
-        </form>
+          {userRole === "doctor" && (
+            <button
+              onClick={() => setSidebarTab("patient")}
+              className={`flex-1 p-4 text-xs font-bold uppercase tracking-wider transition cursor-pointer ${
+                sidebarTab === "patient" 
+                  ? "bg-slate-850 text-teal-400 border-b-2 border-teal-500" 
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-850/50"
+              }`}
+            >
+              <User className="w-4 h-4 inline mr-1.5" />
+              Patient Info
+            </button>
+          )}
+        </div>
+
+        {/* Chat Tab Content */}
+        {sidebarTab === "chat" && (
+          <>
+            {/* Message Feeds */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-3.5">
+              {chatMessages.map((msg, i) => {
+                if (msg.sender === "system") {
+                  return (
+                    <div key={i} className="text-center">
+                      <span className="inline-block text-[10px] text-teal-350 bg-teal-950/40 border border-teal-550/15 py-1 px-3 rounded-full">
+                        {msg.text}
+                      </span>
+                    </div>
+                  );
+                }
+
+                const isMe = msg.sender === userRole;
+                return (
+                  <div 
+                    key={i} 
+                    className={`flex flex-col max-w-[80%] ${isMe ? "ml-auto items-end" : "mr-auto items-start"}`}
+                  >
+                    <span className="text-[10px] text-slate-450 uppercase mb-0.5 font-bold">
+                      {msg.sender === userRole ? "Me" : msg.sender}
+                    </span>
+                    <div className={`p-3 rounded-2xl text-xs ${isMe ? "bg-teal-650 text-white rounded-tr-none" : "bg-slate-800 text-slate-150 rounded-tl-none"}`}>
+                      <p className="leading-relaxed text-left">{msg.text}</p>
+                    </div>
+                    <span className="text-[8px] text-slate-500 mt-0.5">{msg.time}</span>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Input box */}
+            <form onSubmit={handleSendMessage} className="p-4 border-t border-slate-850 flex gap-2">
+              <input
+                type="text"
+                value={newMessage}
+                onChange={(e) => setNewMessage(e.target.value)}
+                placeholder="Type clinical details..."
+                className="flex-1 text-xs px-3 py-2 bg-slate-800 border border-slate-750 rounded-xl focus:border-teal-500 outline-none text-white transition"
+              />
+              <button
+                type="submit"
+                className="p-2.5 bg-teal-600 hover:bg-teal-500 text-slate-950 font-bold rounded-xl transition cursor-pointer"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            </form>
+          </>
+        )}
+
+        {/* Patient Info Tab Content */}
+        {sidebarTab === "patient" && userRole === "doctor" && (
+          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            <div className="text-xs space-y-3">
+              {/* Demographics Section */}
+              <div className="bg-slate-850 rounded-xl p-3 border border-slate-800">
+                <h4 className="text-teal-400 font-bold mb-2 uppercase text-[10px]">Demographics</h4>
+                <div className="space-y-2">
+                  <div>
+                    <label className="text-slate-400 text-[10px] block mb-0.5">Age</label>
+                    <input
+                      type="number"
+                      value={editablePatient.age}
+                      onChange={(e) => setEditablePatient({...editablePatient, age: Number(e.target.value)})}
+                      className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white text-xs focus:border-teal-500 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-slate-400 text-[10px] block mb-0.5">Gender</label>
+                    <input
+                      type="text"
+                      value={editablePatient.gender}
+                      onChange={(e) => setEditablePatient({...editablePatient, gender: e.target.value})}
+                      className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white text-xs focus:border-teal-500 outline-none"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-slate-400 text-[10px] block mb-0.5">Height</label>
+                      <input
+                        type="text"
+                        value={editablePatient.height}
+                        onChange={(e) => setEditablePatient({...editablePatient, height: e.target.value})}
+                        className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white text-xs focus:border-teal-500 outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-slate-400 text-[10px] block mb-0.5">Weight</label>
+                      <input
+                        type="text"
+                        value={editablePatient.weight}
+                        onChange={(e) => setEditablePatient({...editablePatient, weight: e.target.value})}
+                        className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white text-xs focus:border-teal-500 outline-none"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-slate-400 text-[10px] block mb-0.5">Occupation</label>
+                    <input
+                      type="text"
+                      value={editablePatient.occupation}
+                      onChange={(e) => setEditablePatient({...editablePatient, occupation: e.target.value})}
+                      className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white text-xs focus:border-teal-500 outline-none"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Medical History Section */}
+              <div className="bg-slate-850 rounded-xl p-3 border border-slate-800">
+                <h4 className="text-teal-400 font-bold mb-2 uppercase text-[10px]">Medical History</h4>
+                <div className="space-y-2">
+                  <div>
+                    <label className="text-slate-400 text-[10px] block mb-0.5">Main Complaint</label>
+                    <textarea
+                      value={editablePatient.mainComplaint}
+                      onChange={(e) => setEditablePatient({...editablePatient, mainComplaint: e.target.value})}
+                      rows={2}
+                      className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white text-xs focus:border-teal-500 outline-none resize-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-slate-400 text-[10px] block mb-0.5">Symptoms</label>
+                    <textarea
+                      value={editablePatient.symptoms}
+                      onChange={(e) => setEditablePatient({...editablePatient, symptoms: e.target.value})}
+                      rows={2}
+                      className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white text-xs focus:border-teal-500 outline-none resize-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-slate-400 text-[10px] block mb-0.5">Duration</label>
+                    <input
+                      type="text"
+                      value={editablePatient.durationOfProblem}
+                      onChange={(e) => setEditablePatient({...editablePatient, durationOfProblem: e.target.value})}
+                      className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white text-xs focus:border-teal-500 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-slate-400 text-[10px] block mb-0.5">Current Medications</label>
+                    <textarea
+                      value={editablePatient.currentMedications}
+                      onChange={(e) => setEditablePatient({...editablePatient, currentMedications: e.target.value})}
+                      rows={2}
+                      className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white text-xs focus:border-teal-500 outline-none resize-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-slate-400 text-[10px] block mb-0.5">Allergies</label>
+                    <input
+                      type="text"
+                      value={editablePatient.allergies}
+                      onChange={(e) => setEditablePatient({...editablePatient, allergies: e.target.value})}
+                      className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white text-xs focus:border-teal-500 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-slate-400 text-[10px] block mb-0.5">Chronic Diseases</label>
+                    <input
+                      type="text"
+                      value={editablePatient.chronicDiseases}
+                      onChange={(e) => setEditablePatient({...editablePatient, chronicDiseases: e.target.value})}
+                      className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white text-xs focus:border-teal-500 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-slate-400 text-[10px] block mb-0.5">Family Medical History</label>
+                    <textarea
+                      value={editablePatient.familyMedicalHistory}
+                      onChange={(e) => setEditablePatient({...editablePatient, familyMedicalHistory: e.target.value})}
+                      rows={2}
+                      className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white text-xs focus:border-teal-500 outline-none resize-none"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Save Button */}
+              <button
+                onClick={handleSavePatientInfo}
+                className="w-full bg-teal-600 hover:bg-teal-500 text-white font-bold py-2 px-4 rounded-xl text-xs transition cursor-pointer"
+              >
+                Save Patient Information
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Conclude consultation modal notes for doctors */}

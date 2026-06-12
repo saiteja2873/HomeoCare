@@ -77,6 +77,7 @@ export interface Appointment {
   id: string;
   patientId: string; // userId of patient
   doctorId: string; // userId of doctor
+  doctorName?: string; // Doctor's full name
   patientName: string;
   patientEmail: string;
   patientPhone: string;
