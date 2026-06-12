@@ -109,24 +109,6 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate, extraArgs }) => 
     }
   };
 
-  // Demo Credentials Helper
-  const fillCredentials = (role: "admin" | "admin_saiteja" | "doctor" | "patient") => {
-    if (role === "admin_saiteja") {
-      setLoginEmail("saiteja@homeocare.com");
-      setLoginPassword("saiteja1234");
-    } else if (role === "admin") {
-      setLoginEmail("admin@homeocare.com");
-      setLoginPassword("admin123");
-    } else if (role === "doctor") {
-      setLoginEmail("aditya.sen@homeocare.com");
-      setLoginPassword("doctor123");
-    } else {
-      setLoginEmail("patient@gmail.com");
-      setLoginPassword("patient123");
-    }
-    setActiveSegment("login");
-  };
-
   return (
     <div id="auth_page_root" className="min-h-screen flex items-center justify-center py-16 px-4 bg-slate-100 sm:px-6 lg:px-8">
       <div className="max-w-md w-full bg-white border border-slate-200 rounded-3xl shadow-xl overflow-hidden">
@@ -464,48 +446,6 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate, extraArgs }) => 
               </button>
             </form>
           )}
-
-          {/* Developer quick session launcher */}
-          <div className="mt-8 pt-6 border-t border-slate-150 text-left">
-            <span className="block text-[10px] hover:scale-95 text-slate-450 uppercase font-bold tracking-widest mb-3">
-              Developer Quick Launcher (Bypass Login)
-            </span>
-            <div className="flex flex-wrap gap-2">
-              <button
-                id="launcher_patient_btn"
-                onClick={() => fillCredentials("patient")}
-                className="bg-teal-50 hover:bg-teal-100 text-teal-700 border border-teal-150 rounded-lg px-3 py-1.5 text-[11px] font-bold cursor-pointer"
-              >
-                Launch Patient Demo
-              </button>
-              <button
-                id="launcher_doctor_btn"
-                onClick={() => fillCredentials("doctor")}
-                className="bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-150 rounded-lg px-3 py-1.5 text-[11px] font-bold cursor-pointer"
-              >
-                Launch Doctor Demo
-              </button>
-              <button
-                id="launcher_admin_saiteja_btn"
-                onClick={() => fillCredentials("admin_saiteja")}
-                className="bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-150 rounded-lg px-3 py-1.5 text-[11px] font-bold cursor-pointer"
-              >
-                Launch Saiteja Admin
-              </button>
-              <button
-                id="launcher_admin_btn"
-                onClick={() => fillCredentials("admin")}
-                className="bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 rounded-lg px-3 py-1.5 text-[11px] font-bold cursor-pointer"
-              >
-                Launch Admin Panel
-              </button>
-            </div>
-            {activeSegment === "login" && (
-              <p className="text-[10px] text-slate-400 mt-2">
-                Clicking will fill demo credentials. Press standard 'Submit Sign In' to enter the corresponding portal.
-              </p>
-            )}
-          </div>
 
         </div>
       </div>
