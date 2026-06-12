@@ -1,5 +1,4 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import { MongoClient } from "mongodb";
 import bcrypt from "bcrypt";
 import "dotenv/config";
@@ -1215,42 +1214,3 @@ app.get("/api/email-simulation-log", (req, res) => {
 
 // Export app for Vercel
 export { app, connectMongoAndBootstrap };
-
-async function startServer() {
-  // Connect to MongoDB first
-  await connectMongoAndBootstrap();
-  
-  // Vite integration
-  if (process.env.NODE_ENV === "production") {
-    // Production Mode: Serve built files
-    const { default: path } = await import("path");
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    
-    // API route matching wildcard should NOT intercept the API calls
-    app.get("/api/*", (req, res) => {
-      res.status(404).json({ error: "Endpoint not found" });
-    });
-
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
-  } else {
-    // Development Mode with Vite Dev Server Middleware
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    
-    app.use(vite.middlewares);
-  }
-
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`[HomeoCare Fullstack Server] Online at http://localhost:${PORT}`);
-  });
-}
-
-// Start server when running directly (not when imported by Vercel)
-if (process.env.NODE_ENV !== "production" || !process.env.VERCEL) {
-  startServer();
-}
