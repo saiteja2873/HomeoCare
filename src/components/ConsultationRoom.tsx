@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { io, Socket } from "socket.io-client";
 import { 
   Video, 
   VideoOff, 
@@ -28,10 +29,12 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
   onComplete 
 }) => {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [videoActive, setVideoActive] = useState(true);
   const [audioActive, setAudioActive] = useState(true);
   const [screenShareActive, setScreenShareActive] = useState(false);
-  const [useSimulationFeed, setUseSimulationFeed] = useState(true); // Default to simulation active for robust in-app console layouts
+  const [useSimulationFeed, setUseSimulationFeed] = useState(false); // Default to real video
+  const [connectionStatus, setConnectionStatus] = useState<string>("Connecting...");
   
   const [chatMessages, setChatMessages] = useState<any[]>([
     { sender: "system", text: "Secure WebRTC Consultation initiated.", time: "Now" },
@@ -42,41 +45,181 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
   const [showNotesForm, setShowNotesForm] = useState(false);
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const socketRef = useRef<Socket | null>(null);
+  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
+  const roomId = `consultation-${appointment.id}`;
 
-  // Securely map local media stream to HTML5 Video Element whenever element renders or gets ready
+  // STUN servers for NAT traversal
+  const iceServers = {
+    iceServers: [
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun1.l.google.com:19302" },
+    ]
+  };
+
+  // Map local stream to video element
   useEffect(() => {
     if (localVideoRef.current && localStream) {
       localVideoRef.current.srcObject = localStream;
     }
-  }, [localStream, useSimulationFeed]);
+  }, [localStream]);
 
-  // Initialize camera
+  // Map remote stream to video element
   useEffect(() => {
-    async function initCamera() {
+    if (remoteVideoRef.current && remoteStream) {
+      remoteVideoRef.current.srcObject = remoteStream;
+    }
+  }, [remoteStream]);
+
+  // Initialize WebRTC and Socket.io
+  useEffect(() => {
+    async function initWebRTC() {
       try {
+        // Get local media stream
         const stream = await navigator.mediaDevices.getUserMedia({
           video: true,
           audio: true
         });
         setLocalStream(stream);
+        setConnectionStatus("Connected to media devices");
+
+        // Connect to Socket.io signaling server
+        const socket = io(window.location.origin);
+        socketRef.current = socket;
+
+        socket.on("connect", () => {
+          console.log("[WebRTC] Connected to signaling server");
+          setConnectionStatus("Joining consultation room...");
+          socket.emit("join-room", roomId);
+        });
+
+        socket.on("other-users", (users: string[]) => {
+          console.log("[WebRTC] Other users in room:", users);
+          if (users.length > 0) {
+            createPeerConnection(users[0], true, stream);
+          }
+        });
+
+        socket.on("user-joined", (userId: string) => {
+          console.log("[WebRTC] User joined:", userId);
+          createPeerConnection(userId, false, stream);
+        });
+
+        socket.on("offer", async ({ offer, from }: { offer: RTCSessionDescriptionInit; from: string }) => {
+          console.log("[WebRTC] Received offer from:", from);
+          const pc = peerConnectionRef.current;
+          if (pc) {
+            await pc.setRemoteDescription(new RTCSessionDescription(offer));
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            socket.emit("answer", { answer, to: from });
+          }
+        });
+
+        socket.on("answer", async ({ answer }: { answer: RTCSessionDescriptionInit }) => {
+          console.log("[WebRTC] Received answer");
+          const pc = peerConnectionRef.current;
+          if (pc) {
+            await pc.setRemoteDescription(new RTCSessionDescription(answer));
+          }
+        });
+
+        socket.on("ice-candidate", async ({ candidate, from }: { candidate: RTCIceCandidateInit; from: string }) => {
+          console.log("[WebRTC] Received ICE candidate from:", from);
+          const pc = peerConnectionRef.current;
+          if (pc) {
+            await pc.addIceCandidate(new RTCIceCandidate(candidate));
+          }
+        });
+
+        socket.on("user-left", (userId: string) => {
+          console.log("[WebRTC] User left:", userId);
+          setConnectionStatus("Other participant left");
+          setRemoteStream(null);
+        });
+
       } catch (err) {
-        console.warn("Camera hardware access denied or not present, fallback simulated streams initialized.", err);
+        console.error("WebRTC initialization failed:", err);
+        setConnectionStatus("Camera not available - using simulation mode");
+        setUseSimulationFeed(true);
         setChatMessages(prev => [
           ...prev, 
-          { sender: "system", text: "Camera not available - initializing safe simulated canvas preview.", time: "Now" }
+          { sender: "system", text: "Camera not available - switched to simulation mode", time: "Now" }
         ]);
       }
     }
-    initCamera();
 
+    function createPeerConnection(remoteUserId: string, isInitiator: boolean, stream: MediaStream) {
+      const pc = new RTCPeerConnection(iceServers);
+      peerConnectionRef.current = pc;
+
+      // Add local tracks to peer connection
+      stream.getTracks().forEach(track => {
+        pc.addTrack(track, stream);
+      });
+
+      // Handle incoming remote stream
+      pc.ontrack = (event) => {
+        console.log("[WebRTC] Received remote track");
+        setRemoteStream(event.streams[0]);
+        setConnectionStatus("Connected");
+        setChatMessages(prev => [
+          ...prev,
+          { sender: "system", text: "Video connection established", time: "Now" }
+        ]);
+      };
+
+      // Handle ICE candidates
+      pc.onicecandidate = (event) => {
+        if (event.candidate && socketRef.current) {
+          console.log("[WebRTC] Sending ICE candidate");
+          socketRef.current.emit("ice-candidate", {
+            candidate: event.candidate,
+            to: remoteUserId
+          });
+        }
+      };
+
+      // Connection state change
+      pc.onconnectionstatechange = () => {
+        console.log("[WebRTC] Connection state:", pc.connectionState);
+        setConnectionStatus(`Connection: ${pc.connectionState}`);
+      };
+
+      // If initiator, create and send offer
+      if (isInitiator) {
+        pc.createOffer()
+          .then(offer => pc.setLocalDescription(offer))
+          .then(() => {
+            if (socketRef.current) {
+              socketRef.current.emit("offer", {
+                offer: pc.localDescription,
+                to: remoteUserId
+              });
+            }
+          });
+      }
+    }
+
+    initWebRTC();
+
+    // Cleanup on unmount
     return () => {
       if (localStream) {
         localStream.getTracks().forEach(track => track.stop());
       }
+      if (peerConnectionRef.current) {
+        peerConnectionRef.current.close();
+      }
+      if (socketRef.current) {
+        socketRef.current.emit("leave-room", roomId);
+        socketRef.current.disconnect();
+      }
     };
   }, []);
 
-  // Sync video capture toggle
+  // Sync video toggle
   useEffect(() => {
     if (localStream) {
       localStream.getVideoTracks().forEach(track => {
@@ -159,23 +302,40 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
         {/* Double Videos Section */}
         <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-4">
           
-          {/* 1. Opposing View */}
+          {/* 1. Remote Participant View */}
           <div className="bg-slate-900 rounded-3xl border border-slate-800 overflow-hidden relative flex items-center justify-center min-h-[300px]">
             <div className="absolute top-4 left-4 bg-slate-900/80 px-3 py-1.5 rounded-xl border border-slate-800 text-xs font-semibold flex items-center gap-1.5 z-10">
               <User className="w-3.5 h-3.5 text-teal-400" />
               <span>{userRole === "patient" ? "Dr. Aditya Sen (Physician)" : `${appointment.patientName} (Patient Case)`}</span>
             </div>
 
-            {/* Loopback or static presentation card */}
-            {videoActive ? (
+            {/* Connection status badge */}
+            <div className="absolute top-4 right-4 bg-slate-900/95 px-3 py-1.5 rounded-xl border border-slate-800 text-[10px] font-semibold z-10">
+              <span className="text-teal-400">{connectionStatus}</span>
+            </div>
+
+            {/* Remote video stream */}
+            {remoteStream ? (
+              <video
+                ref={remoteVideoRef}
+                autoPlay
+                playsInline
+                className="w-full h-full object-cover"
+              />
+            ) : useSimulationFeed ? (
               <BiometricSimulator 
                 name={userRole === "patient" ? "Dr. Aditya Sen (Physician)" : appointment.patientName} 
                 type={userRole === "patient" ? "doctor" : "patient"} 
               />
             ) : (
-              <div className="text-center space-y-2">
-                <VideoOff className="w-10 h-10 text-slate-500 mx-auto animate-pulse" />
-                <p className="text-xs text-slate-400 font-medium font-mono">Opponent Camera Disabled</p>
+              <div className="text-center space-y-3">
+                <div className="w-14 h-14 bg-slate-800 text-slate-500 border border-slate-700 rounded-full flex items-center justify-center mx-auto">
+                  <User className="w-7 h-7 animate-pulse" />
+                </div>
+                <div>
+                  <p className="text-xs text-slate-400 font-medium">Waiting for other participant...</p>
+                  <p className="text-[10px] text-slate-500 mt-1">{connectionStatus}</p>
+                </div>
               </div>
             )}
           </div>

@@ -3,6 +3,8 @@ import { createServer as createViteServer } from "vite";
 import { MongoClient } from "mongodb";
 import bcrypt from "bcrypt";
 import "dotenv/config";
+import { Server as SocketServer } from "socket.io";
+import { createServer as createHttpServer } from "http";
 import { 
   User, 
   Appointment, 
@@ -1258,9 +1260,91 @@ app.get("/api/email-simulation-log", (req, res) => {
 // Export app for Vercel
 export { app, connectMongoAndBootstrap };
 
+// WebRTC Signaling Server with Socket.io
+function setupWebRTCSignaling(httpServer: any) {
+  const io = new SocketServer(httpServer, {
+    cors: {
+      origin: "*",
+      methods: ["GET", "POST"]
+    }
+  });
+
+  const rooms = new Map<string, Set<string>>();
+
+  io.on("connection", (socket) => {
+    console.log(`[WebRTC] Client connected: ${socket.id}`);
+
+    socket.on("join-room", (roomId: string) => {
+      console.log(`[WebRTC] ${socket.id} joining room: ${roomId}`);
+      socket.join(roomId);
+
+      if (!rooms.has(roomId)) {
+        rooms.set(roomId, new Set());
+      }
+      rooms.get(roomId)!.add(socket.id);
+
+      // Notify others in the room
+      const otherUsers = Array.from(rooms.get(roomId)!).filter(id => id !== socket.id);
+      socket.emit("other-users", otherUsers);
+
+      // Notify others that a new user joined
+      socket.to(roomId).emit("user-joined", socket.id);
+    });
+
+    socket.on("offer", ({ offer, to }) => {
+      console.log(`[WebRTC] Sending offer from ${socket.id} to ${to}`);
+      io.to(to).emit("offer", { offer, from: socket.id });
+    });
+
+    socket.on("answer", ({ answer, to }) => {
+      console.log(`[WebRTC] Sending answer from ${socket.id} to ${to}`);
+      io.to(to).emit("answer", { answer, from: socket.id });
+    });
+
+    socket.on("ice-candidate", ({ candidate, to }) => {
+      console.log(`[WebRTC] Sending ICE candidate from ${socket.id} to ${to}`);
+      io.to(to).emit("ice-candidate", { candidate, from: socket.id });
+    });
+
+    socket.on("leave-room", (roomId: string) => {
+      console.log(`[WebRTC] ${socket.id} leaving room: ${roomId}`);
+      socket.leave(roomId);
+      if (rooms.has(roomId)) {
+        rooms.get(roomId)!.delete(socket.id);
+        if (rooms.get(roomId)!.size === 0) {
+          rooms.delete(roomId);
+        }
+      }
+      socket.to(roomId).emit("user-left", socket.id);
+    });
+
+    socket.on("disconnect", () => {
+      console.log(`[WebRTC] Client disconnected: ${socket.id}`);
+      // Clean up rooms
+      rooms.forEach((users, roomId) => {
+        if (users.has(socket.id)) {
+          users.delete(socket.id);
+          io.to(roomId).emit("user-left", socket.id);
+          if (users.size === 0) {
+            rooms.delete(roomId);
+          }
+        }
+      });
+    });
+  });
+
+  return io;
+}
+
 async function startServer() {
   // Connect to MongoDB first
   await connectMongoAndBootstrap();
+  
+  // Create HTTP server
+  const httpServer = createHttpServer(app);
+
+  // Setup WebRTC signaling
+  setupWebRTCSignaling(httpServer);
   
   // Vite integration
   if (process.env.NODE_ENV === "production") {
@@ -1287,8 +1371,9 @@ async function startServer() {
     app.use(vite.middlewares);
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`[HomeoCare Fullstack Server] Online at http://localhost:${PORT}`);
+    console.log(`[WebRTC Signaling] Socket.io ready for peer connections`);
   });
 }
 
