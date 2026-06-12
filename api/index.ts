@@ -1,4 +1,4 @@
-import { app, connectMongoAndBootstrap } from "../server";
+import { app, connectMongoAndBootstrap } from "./server.js";
 import type { Request, Response } from "express";
 
 // Initialize MongoDB connection
