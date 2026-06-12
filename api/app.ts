@@ -733,16 +733,30 @@ app.post("/api/admin/doctors/:id/approve", async (req, res) => {
 
 app.post("/api/admin/doctors/:id/reject", async (req, res) => {
   const db = await loadDB();
-  const userIndex = db.users.findIndex((u: any) => u.id === req.params.id && u.role === "doctor");
+  const doctorId = req.params.id;
+  
+  // Find the doctor
+  const userIndex = db.users.findIndex((u: any) => u.id === doctorId && u.role === "doctor");
   if (userIndex === -1) {
     return res.status(404).json({ error: "Doctor not found" });
   }
 
-  // Set standard isApproved to false and tag profile status if needed
-  db.users[userIndex].isApproved = false;
+  // Remove the doctor user account
+  const removedDoctor = db.users.splice(userIndex, 1)[0];
+  
+  // Remove associated doctor profile
+  db.doctorProfiles = db.doctorProfiles.filter((dp: any) => dp.userId !== doctorId);
+  
+  // Remove associated availabilities
+  db.availabilities = db.availabilities.filter((a: any) => a.doctorId !== doctorId);
+  
+  // Remove associated notifications
+  db.notifications = db.notifications.filter((n: any) => n.userId !== doctorId);
+  
+  // Note: Keep appointments for record-keeping purposes
   
   await saveDB(db);
-  res.json({ success: true, doctor: db.users[userIndex] });
+  res.json({ success: true, message: "Doctor application rejected and removed", doctor: removedDoctor });
 });
 
 // --- Get Doctor availability ---
