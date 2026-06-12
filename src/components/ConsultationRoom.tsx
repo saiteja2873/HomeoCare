@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { io, Socket } from "socket.io-client";
+import Peer, { MediaConnection, DataConnection } from "peerjs";
 import { 
   Video, 
   VideoOff, 
@@ -79,19 +79,13 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
-  const socketRef = useRef<Socket | null>(null);
-  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
+  const peerRef = useRef<Peer | null>(null);
+  const callRef = useRef<MediaConnection | null>(null);
+  const dataConnectionRef = useRef<DataConnection | null>(null);
   const isInitialMountRef = useRef(true);
   const localStreamRef = useRef<MediaStream | null>(null); // Track current stream for cleanup
   const roomId = `consultation-${appointment.id}`;
-
-  // STUN servers for NAT traversal
-  const iceServers = {
-    iceServers: [
-      { urls: "stun:stun.l.google.com:19302" },
-      { urls: "stun:stun1.l.google.com:19302" },
-    ]
-  };
+  const myPeerId = `${userRole}-apt_${appointment.id}`; // Consistent peer ID without timestamp
 
   // Map local stream to video element
   useEffect(() => {
@@ -107,15 +101,64 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
     }
   }, [remoteStream, useSimulationFeed]);
 
-  // Initialize WebRTC and Socket.io
+  // Handler for incoming data messages (shared function)
+  const handleDataMessage = (data: any) => {
+    console.log("[PeerJS] Received data:", data);
+    if (data.type === "video-toggle") {
+      console.log("[PeerJS] Remote video toggle received:", data.videoActive);
+      setRemoteVideoActive(data.videoActive);
+    } else if (data.type === "audio-toggle") {
+      console.log("[PeerJS] Remote audio toggle received:", data.audioActive);
+      setRemoteAudioActive(data.audioActive);
+    } else if (data.type === "end-call") {
+      handleRemoteCallEnd();
+    }
+  };
+
+  // Handler for remote call end
+  const handleRemoteCallEnd = () => {
+    console.log("[PeerJS] Call ended by other participant");
+    
+    // Stop local media immediately
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = null;
+    }
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = null;
+    }
+    
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => {
+        track.stop();
+        console.log(`[PeerJS] Call-ended: Stopped ${track.kind} track`);
+      });
+      localStreamRef.current = null;
+    }
+    
+    if (callRef.current) {
+      callRef.current.close();
+      callRef.current = null;
+    }
+    
+    setChatMessages(prev => [
+      ...prev,
+      { sender: "system", text: "Call ended by other participant", time: "Now" }
+    ]);
+    
+    setTimeout(() => {
+      onClose();
+    }, 2000);
+  };
+
+  // Initialize WebRTC with PeerJS
   useEffect(() => {
     // Prevent duplicate initialization
-    if (socketRef.current) {
-      console.log("[WebRTC] Already initialized, skipping");
+    if (peerRef.current) {
+      console.log("[PeerJS] Already initialized, skipping");
       return;
     }
 
-    async function initWebRTC() {
+    async function initPeerJS() {
       try {
         // Get local media stream
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -123,124 +166,109 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
           audio: true
         });
         setLocalStream(stream);
-        localStreamRef.current = stream; // Keep ref for cleanup in event handlers
+        localStreamRef.current = stream;
         setConnectionStatus("Connected to media devices");
 
-        // Connect to Socket.io signaling server
-        const socket = io(window.location.origin);
-        socketRef.current = socket;
-
-        socket.on("connect", () => {
-          console.log("[WebRTC] Connected to signaling server");
-          setConnectionStatus("Joining consultation room...");
-          socket.emit("join-room", roomId);
+        // Create PeerJS instance
+        console.log("[PeerJS] Creating peer with ID:", myPeerId);
+        const peer = new Peer(myPeerId, {
+          host: "0.peerjs.com",
+          port: 443,
+          path: "/",
+          secure: true,
+          debug: 2
         });
+        peerRef.current = peer;
 
-        socket.on("other-users", (users: string[]) => {
-          console.log("[WebRTC] Other users in room:", users);
-          if (users.length > 0) {
-            createPeerConnection(users[0], true, stream);
-          }
-        });
-
-        socket.on("user-joined", (userId: string) => {
-          console.log("[WebRTC] User joined:", userId);
-          createPeerConnection(userId, false, stream);
-        });
-
-        socket.on("offer", async ({ offer, from }: { offer: RTCSessionDescriptionInit; from: string }) => {
-          console.log("[WebRTC] Received offer from:", from);
+        // Handle successful connection to PeerJS server
+        peer.on("open", (id) => {
+          console.log("[PeerJS] Connected to PeerJS server. My peer ID:", id);
+          setConnectionStatus("Waiting for other participant...");
           
-          // Create peer connection if it doesn't exist
-          if (!peerConnectionRef.current) {
-            createPeerConnection(from, false, stream);
-          }
+          // Determine remote peer ID based on role
+          const remotePeerId = userRole === "doctor" 
+            ? `patient-apt_${appointment.id}` 
+            : `doctor-apt_${appointment.id}`;
           
-          const pc = peerConnectionRef.current;
-          if (pc) {
-            await pc.setRemoteDescription(new RTCSessionDescription(offer));
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            socket.emit("answer", { answer, to: from });
+          console.log("[PeerJS] Looking for remote peer:", remotePeerId);
+          
+          // If doctor, initiate call to patient (doctor usually joins first)
+          if (userRole === "doctor") {
+            setTimeout(() => {
+              console.log("[PeerJS] Doctor calling patient:", remotePeerId);
+              const call = peer.call(remotePeerId, stream, {
+                metadata: { from: userRole }
+              });
+              
+              if (call) {
+                call.on("stream", (remoteStream) => {
+                  console.log("[PeerJS] Received remote stream from patient");
+                  setRemoteStream(remoteStream);
+                  setConnectionStatus("Connected");
+                  setChatMessages(prev => [
+                    ...prev,
+                    { sender: "system", text: "Video connection established", time: "Now" }
+                  ]);
+                });
+
+                call.on("close", () => {
+                  console.log("[PeerJS] Call closed");
+                  setRemoteStream(null);
+                  setConnectionStatus("Call ended");
+                });
+
+                callRef.current = call;
+              }
+            }, 2000); // Wait 2 seconds for patient to connect
           }
         });
 
-        socket.on("answer", async ({ answer }: { answer: RTCSessionDescriptionInit }) => {
-          console.log("[WebRTC] Received answer");
-          const pc = peerConnectionRef.current;
-          if (pc) {
-            await pc.setRemoteDescription(new RTCSessionDescription(answer));
-          }
+        // Handle incoming calls
+        peer.on("call", (call) => {
+          console.log("[PeerJS] Receiving call from:", call.peer);
+          setConnectionStatus("Connecting...");
+          
+          // Answer the call with local stream
+          call.answer(stream);
+          callRef.current = call;
+          
+          call.on("stream", (remoteStream) => {
+            console.log("[PeerJS] Received remote stream");
+            setRemoteStream(remoteStream);
+            setConnectionStatus("Connected");
+            setChatMessages(prev => [
+              ...prev,
+              { sender: "system", text: "Video connection established", time: "Now" }
+            ]);
+          });
+
+          call.on("close", () => {
+            console.log("[PeerJS] Call closed");
+            setRemoteStream(null);
+            setConnectionStatus("Call ended");
+          });
         });
 
-        socket.on("ice-candidate", async ({ candidate, from }: { candidate: RTCIceCandidateInit; from: string }) => {
-          console.log("[WebRTC] Received ICE candidate from:", from);
-          const pc = peerConnectionRef.current;
-          if (pc && pc.remoteDescription) {
-            try {
-              await pc.addIceCandidate(new RTCIceCandidate(candidate));
-              console.log("[WebRTC] ICE candidate added successfully");
-            } catch (err) {
-              console.error("[WebRTC] Error adding ICE candidate:", err);
-            }
+        // Handle incoming data connections for toggles
+        peer.on("connection", (conn) => {
+          console.log("[PeerJS] Data connection established from remote");
+          dataConnectionRef.current = conn;
+          
+          conn.on("data", handleDataMessage);
+        });
+
+        // Handle connection errors
+        peer.on("error", (err) => {
+          console.error("[PeerJS] Error:", err);
+          if (err.type === "peer-unavailable") {
+            setConnectionStatus("Waiting for other participant...");
           } else {
-            console.warn("[WebRTC] Cannot add ICE candidate - no peer connection or remote description");
+            setConnectionStatus(`Connection error: ${err.type}`);
           }
-        });
-
-        socket.on("user-left", (userId: string) => {
-          console.log("[WebRTC] User left:", userId);
-          setConnectionStatus("Other participant left");
-          setRemoteStream(null);
-        });
-
-        socket.on("call-ended", () => {
-          console.log("[WebRTC] Call ended by other participant");
-          
-          // Stop local media immediately when call ends
-          if (localVideoRef.current) {
-            localVideoRef.current.srcObject = null;
-          }
-          if (remoteVideoRef.current) {
-            remoteVideoRef.current.srcObject = null;
-          }
-          
-          // Use ref to access current stream (closure issue fix)
-          if (localStreamRef.current) {
-            localStreamRef.current.getTracks().forEach(track => {
-              track.stop();
-              console.log(`[WebRTC] Call-ended: Stopped ${track.kind} track`);
-            });
-            localStreamRef.current = null;
-          }
-          
-          // Close peer connection
-          if (peerConnectionRef.current) {
-            peerConnectionRef.current.close();
-            peerConnectionRef.current = null;
-          }
-          
-          setChatMessages(prev => [
-            ...prev,
-            { sender: "system", text: "Call ended by other participant", time: "Now" }
-          ]);
-          setTimeout(() => {
-            onClose();
-          }, 2000);
-        });
-
-        socket.on("video-toggle", ({ videoActive: remoteVideo }: { videoActive: boolean }) => {
-          console.log("[WebRTC] Remote video toggled:", remoteVideo);
-          setRemoteVideoActive(remoteVideo);
-        });
-
-        socket.on("audio-toggle", ({ audioActive: remoteAudio }: { audioActive: boolean }) => {
-          console.log("[WebRTC] Remote audio toggled:", remoteAudio);
-          setRemoteAudioActive(remoteAudio);
         });
 
       } catch (err) {
-        console.error("WebRTC initialization failed:", err);
+        console.error("[PeerJS] Initialization failed:", err);
         setConnectionStatus("Camera not available - using simulation mode");
         setUseSimulationFeed(true);
         setChatMessages(prev => [
@@ -250,94 +278,11 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
       }
     }
 
-    function createPeerConnection(remoteUserId: string, isInitiator: boolean, stream: MediaStream) {
-      // Don't create duplicate peer connections
-      if (peerConnectionRef.current) {
-        console.log("[WebRTC] Peer connection already exists, reusing");
-        return;
-      }
-
-      console.log(`[WebRTC] Creating peer connection (initiator: ${isInitiator})`);
-      const pc = new RTCPeerConnection(iceServers);
-      peerConnectionRef.current = pc;
-
-      // Add local tracks to peer connection
-      stream.getTracks().forEach(track => {
-        console.log(`[WebRTC] Adding local ${track.kind} track`);
-        pc.addTrack(track, stream);
-      });
-
-      // Handle incoming remote stream
-      pc.ontrack = (event) => {
-        console.log("[WebRTC] Received remote track:", event.track.kind);
-        console.log("[WebRTC] Remote stream has", event.streams[0].getTracks().length, "tracks");
-        setRemoteStream(event.streams[0]);
-        setConnectionStatus("Connected");
-        setChatMessages(prev => [
-          ...prev,
-          { sender: "system", text: "Video connection established", time: "Now" }
-        ]);
-      };
-
-      // Handle ICE candidates
-      pc.onicecandidate = (event) => {
-        if (event.candidate && socketRef.current) {
-          console.log("[WebRTC] Sending ICE candidate");
-          socketRef.current.emit("ice-candidate", {
-            candidate: event.candidate,
-            to: remoteUserId
-          });
-        }
-      };
-
-      // ICE connection state change
-      pc.oniceconnectionstatechange = () => {
-        console.log("[WebRTC] ICE connection state:", pc.iceConnectionState);
-        if (pc.iceConnectionState === "failed") {
-          setConnectionStatus("Connection failed - retrying...");
-          pc.restartIce();
-        }
-      };
-
-      // Connection state change
-      pc.onconnectionstatechange = () => {
-        console.log("[WebRTC] Connection state:", pc.connectionState);
-        setConnectionStatus(`Connection: ${pc.connectionState}`);
-        
-        if (pc.connectionState === "connected") {
-          setConnectionStatus("Connected");
-        } else if (pc.connectionState === "disconnected") {
-          setConnectionStatus("Disconnected");
-        } else if (pc.connectionState === "failed") {
-          setConnectionStatus("Connection failed");
-        }
-      };
-
-      // If initiator, create and send offer
-      if (isInitiator) {
-        pc.createOffer()
-          .then(offer => {
-            console.log("[WebRTC] Created offer");
-            return pc.setLocalDescription(offer);
-          })
-          .then(() => {
-            console.log("[WebRTC] Set local description, sending offer");
-            if (socketRef.current) {
-              socketRef.current.emit("offer", {
-                offer: pc.localDescription,
-                to: remoteUserId
-              });
-            }
-          })
-          .catch(err => console.error("[WebRTC] Error creating offer:", err));
-      }
-    }
-
-    initWebRTC();
+    initPeerJS();
 
     // Cleanup on unmount
     return () => {
-      console.log("[WebRTC] Cleaning up connections...");
+      console.log("[PeerJS] Cleaning up connections...");
       
       // Clear video element sources
       if (localVideoRef.current) {
@@ -347,27 +292,31 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
         remoteVideoRef.current.srcObject = null;
       }
       
-      // Stop all media tracks - use ref for consistency
+      // Stop all media tracks
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach(track => {
           track.stop();
-          console.log(`[WebRTC] Cleanup: Stopped ${track.kind} track`);
+          console.log(`[PeerJS] Cleanup: Stopped ${track.kind} track`);
         });
         localStreamRef.current = null;
       }
       
-      // Close peer connection
-      if (peerConnectionRef.current) {
-        peerConnectionRef.current.close();
-        peerConnectionRef.current = null;
+      // Close call
+      if (callRef.current) {
+        callRef.current.close();
+        callRef.current = null;
       }
       
-      // Disconnect socket
-      if (socketRef.current) {
-        socketRef.current.emit("leave-room", roomId);
-        socketRef.current.removeAllListeners();
-        socketRef.current.disconnect();
-        socketRef.current = null;
+      // Close data connection
+      if (dataConnectionRef.current) {
+        dataConnectionRef.current.close();
+        dataConnectionRef.current = null;
+      }
+      
+      // Destroy peer
+      if (peerRef.current) {
+        peerRef.current.destroy();
+        peerRef.current = null;
       }
     };
   }, []);
@@ -380,16 +329,35 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
       });
       
       // Only notify remote participant after initial mount
-      if (!isInitialMountRef.current && socketRef.current) {
-        console.log('[WebRTC] Notifying remote: video =', videoActive, 'socket connected:', socketRef.current.connected, 'roomId:', roomId);
-        if (socketRef.current.connected) {
-          socketRef.current.emit("video-toggle", { roomId, videoActive });
+      if (!isInitialMountRef.current && peerRef.current) {
+        console.log('[PeerJS] Notifying remote: video =', videoActive);
+        
+        // Send toggle via data connection
+        const remotePeerId = userRole === "doctor" 
+          ? `patient-apt_${appointment.id}` 
+          : `doctor-apt_${appointment.id}`;
+        
+        let dataConn = dataConnectionRef.current;
+        
+        if (!dataConn || !dataConn.open) {
+          console.log('[PeerJS] Creating data connection for video toggle');
+          dataConn = peerRef.current.connect(remotePeerId);
+          dataConnectionRef.current = dataConn;
+          
+          // Set up data listener for this connection
+          dataConn.on("data", handleDataMessage);
+          
+          dataConn.on("open", () => {
+            console.log('[PeerJS] Data connection opened, sending video toggle');
+            dataConn.send({ type: "video-toggle", videoActive });
+          });
         } else {
-          console.error('[WebRTC] Cannot notify - socket not connected');
+          console.log('[PeerJS] Sending video toggle via existing connection');
+          dataConn.send({ type: "video-toggle", videoActive });
         }
       }
     }
-  }, [videoActive, localStream, roomId]);
+  }, [videoActive, localStream]);
 
   // Sync audio toggle
   useEffect(() => {
@@ -399,18 +367,40 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
       });
       
       // Only notify remote participant after initial mount
-      if (!isInitialMountRef.current && socketRef.current) {
-        console.log('[WebRTC] Notifying remote: audio =', audioActive);
-        socketRef.current.emit("audio-toggle", { roomId, audioActive });
+      if (!isInitialMountRef.current && peerRef.current) {
+        console.log('[PeerJS] Notifying remote: audio =', audioActive);
+        
+        const remotePeerId = userRole === "doctor" 
+          ? `patient-apt_${appointment.id}` 
+          : `doctor-apt_${appointment.id}`;
+        
+        let dataConn = dataConnectionRef.current;
+        
+        if (!dataConn || !dataConn.open) {
+          console.log('[PeerJS] Creating data connection for audio toggle');
+          dataConn = peerRef.current.connect(remotePeerId);
+          dataConnectionRef.current = dataConn;
+          
+          // Set up data listener for this connection
+          dataConn.on("data", handleDataMessage);
+          
+          dataConn.on("open", () => {
+            console.log('[PeerJS] Data connection opened, sending audio toggle');
+            dataConn.send({ type: "audio-toggle", audioActive });
+          });
+        } else {
+          console.log('[PeerJS] Sending audio toggle via existing connection');
+          dataConn.send({ type: "audio-toggle", audioActive });
+        }
       }
     }
-  }, [audioActive, localStream, roomId]);
+  }, [audioActive, localStream]);
 
   // Mark initial mount as complete after streams are ready
   useEffect(() => {
-    if (localStream && socketRef.current) {
+    if (localStream && peerRef.current) {
       const timer = setTimeout(() => {
-        console.log('[WebRTC] Initial mount complete, enabling media toggle notifications');
+        console.log('[PeerJS] Initial mount complete, enabling media toggle notifications');
         isInitialMountRef.current = false;
       }, 1000);
       return () => clearTimeout(timer);
@@ -418,7 +408,37 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
   }, [localStream]);
 
   const handleEndCall = () => {
-    console.log("[WebRTC] Ending call and cleaning up media...");
+    console.log("[PeerJS] Ending call and cleaning up media...");
+    
+    // Notify other participant
+    const remotePeerId = userRole === "doctor" 
+      ? `patient-apt_${appointment.id}` 
+      : `doctor-apt_${appointment.id}`;
+    
+    if (peerRef.current) {
+      // Create or get data connection
+      let dataConn = dataConnectionRef.current;
+      
+      if (!dataConn || !dataConn.open) {
+        console.log("[PeerJS] Creating data connection to send end-call");
+        dataConn = peerRef.current.connect(remotePeerId);
+        dataConnectionRef.current = dataConn;
+        
+        // Wait for connection to open before sending
+        dataConn.on("open", () => {
+          console.log("[PeerJS] Data connection opened, sending end-call");
+          dataConn.send({ type: "end-call" });
+          
+          // Close after a short delay to ensure message is sent
+          setTimeout(() => {
+            dataConn.close();
+          }, 100);
+        });
+      } else {
+        console.log("[PeerJS] Sending end-call via existing connection");
+        dataConn.send({ type: "end-call" });
+      }
+    }
     
     // Clear video element sources first
     if (localVideoRef.current) {
@@ -428,11 +448,11 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
       remoteVideoRef.current.srcObject = null;
     }
     
-    // Stop all local media tracks (camera and microphone) - use ref for consistency
+    // Stop all local media tracks (camera and microphone)
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach(track => {
         track.stop();
-        console.log(`[WebRTC] Stopped ${track.kind} track`);
+        console.log(`[PeerJS] Stopped ${track.kind} track`);
       });
       localStreamRef.current = null;
       setLocalStream(null);
@@ -443,23 +463,26 @@ export const ConsultationRoom: React.FC<ConsultationRoomProps> = ({
       setRemoteStream(null);
     }
     
-    // Close peer connection
-    if (peerConnectionRef.current) {
-      peerConnectionRef.current.close();
-      peerConnectionRef.current = null;
-    }
-    
-    // Notify other participant and disconnect socket
-    if (socketRef.current) {
-      socketRef.current.emit("end-call", roomId);
-      socketRef.current.emit("leave-room", roomId);
-      socketRef.current.removeAllListeners();
-      socketRef.current.disconnect();
-      socketRef.current = null;
-    }
-    
-    // Close the consultation room
-    onClose();
+    // Close call after a delay to allow end-call message to be sent
+    setTimeout(() => {
+      if (callRef.current) {
+        callRef.current.close();
+        callRef.current = null;
+      }
+      
+      if (dataConnectionRef.current) {
+        dataConnectionRef.current.close();
+        dataConnectionRef.current = null;
+      }
+      
+      if (peerRef.current) {
+        peerRef.current.destroy();
+        peerRef.current = null;
+      }
+      
+      // Close the consultation room
+      onClose();
+    }, 300);
   };
 
   const handleSavePatientInfo = async () => {
