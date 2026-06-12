@@ -2,6 +2,7 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import { MongoClient } from "mongodb";
 import bcrypt from "bcrypt";
+import "dotenv/config";
 import { 
   User, 
   Appointment, 
@@ -12,7 +13,7 @@ import {
 } from "./src/types";
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 const SALT_ROUNDS = 10;
 
 // Password hashing helpers
